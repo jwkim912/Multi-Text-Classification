@@ -5,27 +5,29 @@ from tqdm import tqdm
 import tensorflow_addons as tfa
 import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from transformers import BertTokenizer, TFBertForSequenceClassification
+from transformers import BertTokenizer, TFBertForSequenceClassification, BertConfig
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 
+
 MODEL_NAME = "klue/bert-base"
-model = TFBertForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=6, from_pt=True)
-tokenizer = BertTokenizer.from_pretrained(MODEL_NAME)
+config = BertConfig.from_pretrained('./model/config.json', num_labels=6)
+model = TFBertForSequenceClassification.from_pretrained('./model/pytorch_model.bin', from_pt=True, config=config)
+tokenizer = BertTokenizer.from_pretrained('./model')
 
 device_name = tf.test.gpu_device_name()
 if device_name == '/device:GPU:0':
-    print("GPU 작동 중")
-    mirrored_strategy = tf.distribute.MirroredStrategy()
+  print("GPU 작동 중")
+  mirrored_strategy = tf.distribute.MirroredStrategy()
 else:
-    print("GPU 미작동 중")
+  print("GPU 미작동 중")
 
 data = open('./data/train.txt').read().splitlines()
 train_dataset_list = []
 for d in data:
     label, sentences = d.split('\t')
-    sentence = sentences.split('+')[0]
-    train_dataset_list.append({'text': sentence, 'label': label})
+    # sentence = sentences.split('+')[0] // 첫 문장만 학습
+    train_dataset_list.append({'text': sentences, 'label': label})
 
 train_df = pd.DataFrame(train_dataset_list)
 train_df.info()
@@ -38,25 +40,25 @@ print(train_df.groupby(by='label').count())
 X_data = train_df['text']
 y_data = train_df['label']
 
-TEST_SIZE = 0.2  # Train: Test = 8 :2 분리
+TEST_SIZE = 0.2 # Train: Test = 8 :2 분리
 RANDOM_STATE = 42
 # strtify = True 일 경우, 데이터 분리 이전의 라벨별 분포 고려
 X_train, X_test, y_train, y_test = train_test_split(X_data, y_data,
-                                                    test_size=TEST_SIZE,
-                                                    random_state=RANDOM_STATE,
-                                                    stratify=y_data)
+                                                    test_size= TEST_SIZE,
+                                                    random_state= RANDOM_STATE,
+                                                    stratify= y_data)
 
 print(f"훈련 입력 데이터 개수: {len(X_train)}")
 print(f"테스트 입력 데이터 개수: {len(X_test)}")
 
 # 훈련 데이터 라벨별 비율
-y_train.value_counts(normalize=True)
+y_train.value_counts(normalize= True)
 
 # 테스트 데이터 라벨별 비율
-y_test.value_counts(normalize=True)
+y_test.value_counts(normalize= True)
 
 # 입력 데이터(문장) 길이 제한
-MAX_SEQ_LEN = 64
+MAX_SEQ_LEN = 256
 
 
 def convert_data(X_data, y_data):
@@ -87,7 +89,6 @@ def convert_data(X_data, y_data):
 
     return [tokens, masks, segments], targets
 
-
 # train 데이터를 Bert의 Input 타입에 맞게 변환
 train_x, train_y = convert_data(X_train, y_train)
 # test 데이터를 Bert의 Input 타입에 맞게 변환
@@ -105,8 +106,7 @@ DROPOUT_RATE = 0.5
 NUM_CLASS = 6
 dropout = tf.keras.layers.Dropout(DROPOUT_RATE)(bert_output)
 # Multi-class classification 문제이므로 activation function은 softmax로 설정
-sentiment_layer = tf.keras.layers.Dense(NUM_CLASS, activation='softmax',
-                                        kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02))(dropout)
+sentiment_layer = tf.keras.layers.Dense(NUM_CLASS, activation='softmax', kernel_initializer=tf.keras.initializers.TruncatedNormal(stddev=0.02))(dropout)
 sentiment_model = tf.keras.Model([token_inputs, mask_inputs, segment_inputs], sentiment_layer)
 
 # 옵티마이저 Rectified Adam 하이퍼파리미터 조정
@@ -118,11 +118,11 @@ WARMUP_PROPORTION = 0.1
 EPSILON = 1e-8
 CLIPNORM = 1.0
 optimizer = tfa.optimizers.RectifiedAdam(learning_rate=LEARNING_RATE,
-                                         total_steps=TOTAL_STEPS,
-                                         warmup_proportion=WARMUP_PROPORTION,
-                                         min_lr=MIN_LR,
-                                         epsilon=EPSILON,
-                                         clipnorm=CLIPNORM)
+                                          total_steps=TOTAL_STEPS,
+                                          warmup_proportion=WARMUP_PROPORTION,
+                                          min_lr=MIN_LR,
+                                          epsilon=EPSILON,
+                                          clipnorm=CLIPNORM)
 
 # 감정분류 모델 컴파일
 sentiment_model.compile(optimizer=optimizer,
@@ -141,11 +141,11 @@ early_stopping = EarlyStopping(
 BEST_MODEL_NAME = './model/best_model.h5'
 
 model_checkpoint = ModelCheckpoint(
-    filepath=BEST_MODEL_NAME,
-    monitor="val_loss",
-    mode="min",
-    save_best_only=True,  # 성능 향상 시에만 모델 저장
-    verbose=1
+    filepath = BEST_MODEL_NAME,
+    monitor = "val_loss",
+    mode = "min",
+    save_best_only = True, # 성능 향상 시에만 모델 저장
+    verbose = 1
 )
 
 callbacks = [early_stopping, model_checkpoint]
@@ -161,18 +161,19 @@ sentiment_model.fit(train_x, train_y,
                     callbacks=callbacks
                     )
 
-# ----------------- Evaluate ---------------
+
+#----------------- Evaluate ---------------
 # 최고 성능의 모델 불러오기
 sentiment_model_best = tf.keras.models.load_model(BEST_MODEL_NAME,
-                                                  custom_objects={
-                                                      'TFBertForSequenceClassification': TFBertForSequenceClassification})
+                                                  custom_objects={'TFBertForSequenceClassification': TFBertForSequenceClassification})
 
 # 모델이 예측한 라벨 도출
 predicted_value = sentiment_model_best.predict(test_x)
-predicted_label = np.argmax(predicted_value, axis=1)
+predicted_label = np.argmax(predicted_value, axis = 1)
 
 # Classification Report 저장
-CL_REPORT_FILE = "./metric/cl_report.csv"
+CL_REPORT_FILE = "./metric/cl_report_all_sents.csv"
+
 
 cl_report = classification_report(test_y, predicted_label, output_dict=True)
 cl_report_df = pd.DataFrame(cl_report).transpose()
